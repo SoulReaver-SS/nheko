@@ -81,7 +81,7 @@ jobs:
         shell: pwsh
         run: |
           choco install openssl -y --no-progress
-          "OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL-Win64" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # build.bat also builds and signs-attempts an nheko.msix at the end.
       # We only want nheko_win_64.zip (created earlier in the script, before
