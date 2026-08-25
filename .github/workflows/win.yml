@@ -14,6 +14,8 @@ jobs:
   build:
     runs-on: windows-2022
     timeout-minutes: 180
+    env:
+      CI_JOB_ID: ${{ github.run_number }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,6 +77,12 @@ jobs:
           restore-keys: |
             hunter-win64-
 
+      - name: Install OpenSSL
+        shell: pwsh
+        run: |
+          choco install openssl -y --no-progress
+          "OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       # build.bat also builds and signs-attempts an nheko.msix at the end.
       # We only want nheko_win_64.zip (created earlier in the script, before
       # the msix section) and can't sign the msix anyway, so don't let a
@@ -87,11 +95,10 @@ jobs:
       - name: Verify nheko_win_64.zip was produced
         shell: pwsh
         run: |
-          if (-not (Test-Path nheko_win_64.zip)) {
-            Write-Error "nheko_win_64.zip was not produced - build.bat must have failed before packaging. Check the 'Run build.bat' step's log above."
-            exit 1
-          }
-          Get-Item nheko_win_64.zip | Format-List Name, Length
+          if (-not (Test-Path nheko_win_64.zip)) { Write-Error "no zip produced"; exit 1 }
+          Expand-Archive nheko_win_64.zip -DestinationPath verify -Force
+          if (-not (Test-Path verify\nheko.exe)) { Write-Error "zip has no nheko.exe"; exit 1 }
+          Get-ChildItem verify | Select-Object Name, Length
 
       - name: Upload nheko_win_64.zip
         uses: actions/upload-artifact@v4
