@@ -1,0 +1,101 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # build.bat expects qmake, nmake-compatible qmake project files and
+      # windeployqt on PATH, and Qt6 (>=6.5, Core Widgets Gui LinguistTools
+      # Svg Multimedia Qml QuickControls2) discoverable by CMake.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.2"
+          arch: win64_msvc2022_64
+          modules: "qtmultimedia qtsvg qtdeclarative qttools"
+          cache: true
+
+      # build.bat hardcodes the vcvarsall.bat path for the "BuildTools"
+      # edition of VS2022 under Program Files (x86). GitHub's windows-2022
+      # runner ships VS2022 Enterprise under plain Program Files instead, so
+      # point that expected path at whatever edition is actually installed
+      # via a directory junction (no admin rights required), rather than
+      # editing build.bat itself.
+      - name: Alias VS install for build.bat's hardcoded vcvarsall path
+        shell: pwsh
+        run: |
+          $vsRoot = "C:\Program Files\Microsoft Visual Studio\2022"
+          $expectedParent = "C:\Program Files (x86)\Microsoft Visual Studio\2022"
+          $expectedLink = Join-Path $expectedParent "BuildTools"
+
+          if (Test-Path (Join-Path $expectedLink "VC\Auxiliary\Build\vcvarsall.bat")) {
+            Write-Host "Expected path already resolves, nothing to do."
+            exit 0
+          }
+
+          $edition = "Enterprise", "Professional", "Community", "BuildTools" |
+            ForEach-Object { Join-Path $vsRoot $_ } |
+            Where-Object { Test-Path (Join-Path $_ "VC\Auxiliary\Build\vcvarsall.bat") } |
+            Select-Object -First 1
+
+          if (-not $edition) {
+            throw "No VS2022 install with vcvarsall.bat found under $vsRoot"
+          }
+
+          New-Item -ItemType Directory -Force -Path $expectedParent | Out-Null
+          cmd /c mklink /J "$expectedLink" "$edition"
+          Write-Host "Linked $expectedLink -> $edition"
+
+      # HUNTER_ROOT is hardcoded to C:\hunter in build.bat. Cache it (and the
+      # FetchContent deps under build/_deps: cmark, qtkeychain,
+      # kdsingleapplication) so repeat builds don't recompile every
+      # hunter-vendored dependency (openssl, curl, lmdb, spdlog, olm, ...)
+      # from scratch.
+      - name: Cache Hunter packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\hunter
+            build/_deps
+          key: hunter-win64-${{ hashFiles('cmake/Hunter/**', 'CMakeLists.txt', '.ci/windows/build.bat') }}
+          restore-keys: |
+            hunter-win64-
+
+      # build.bat also builds and signs-attempts an nheko.msix at the end.
+      # We only want nheko_win_64.zip (created earlier in the script, before
+      # the msix section) and can't sign the msix anyway, so don't let a
+      # failure in the msix/makeappx steps fail this step - the zip's
+      # presence is verified explicitly afterwards.
+      - name: Run build.bat
+        shell: cmd
+        run: call .ci\windows\build.bat & exit /b 0
+
+      - name: Verify nheko_win_64.zip was produced
+        shell: pwsh
+        run: |
+          if (-not (Test-Path nheko_win_64.zip)) {
+            Write-Error "nheko_win_64.zip was not produced - build.bat must have failed before packaging. Check the 'Run build.bat' step's log above."
+            exit 1
+          }
+          Get-Item nheko_win_64.zip | Format-List Name, Length
+
+      - name: Upload nheko_win_64.zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: nheko_win_64
+          path: nheko_win_64.zip
+          if-no-files-found: error
